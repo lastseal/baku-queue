@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*
 
+from typing import Any, Dict, Optional, Callable
 from baku import config
 import zmq
 import json
@@ -7,7 +8,7 @@ import logging
 import re
 import threading
 import time
-from typing import Any, Dict, Optional, Callable
+import signal
 
 # Leer configuración desde variables de entorno
 QUEUE_PORT = config.get('QUEUE_PORT', default=5555)
