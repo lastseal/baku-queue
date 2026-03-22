@@ -10,7 +10,7 @@ import time
 from typing import Any, Dict, Optional, Callable
 
 # Leer configuración desde variables de entorno
-QUEUE_ADDRESS = config.get('QUEUE_ADDRESS', default='tcp://localhost:5555')
+QUEUE_PORT = config.get('QUEUE_PORT', default=5555)
 QUEUE_TIMEOUT = config.get('QUEUE_TIMEOUT', default=30, converter=int)
 QUEUE_RETRY_ATTEMPTS = config.get('QUEUE_RETRY_ATTEMPTS', default=3, converter=int)
 QUEUE_WORKERS = config.get('QUEUE_WORKERS', default=1, converter=int)
@@ -41,16 +41,7 @@ def _validate_address(address: str) -> bool:
         return False
 
 
-def _push_bind_address(connect_address: str) -> str:
-    """Bind del PUSH a partir del mismo QUEUE_ADDRESS (tcp host:puerto → tcp *:puerto)."""
-    if connect_address.startswith("tcp://"):
-        m = re.match(r"tcp://([^/:]+):(\d+)", connect_address)
-        if m:
-            return f"tcp://*:{m.group(2)}"
-    return connect_address
-
-
-def send(task: Dict[str, Any], address: Optional[str] = None, timeout: Optional[int] = None) -> bool:
+def send(task: Dict[str, Any], timeout: Optional[int] = None) -> bool:
     """
     Envía una tarea a la cola ZeroMQ.
     
@@ -60,7 +51,6 @@ def send(task: Dict[str, Any], address: Optional[str] = None, timeout: Optional[
     
     Args:
         task: Diccionario con la tarea a enviar. Debe ser serializable a JSON.
-        address: Dirección que usan los PULL con connect (default: QUEUE_ADDRESS).
         timeout: Timeout en segundos para la operación (default: QUEUE_TIMEOUT)
         
     Returns:
@@ -77,14 +67,9 @@ def send(task: Dict[str, Any], address: Optional[str] = None, timeout: Optional[
     if not isinstance(task, dict):
         raise ValueError("La tarea debe ser un diccionario")
     
-    queue_address = address or QUEUE_ADDRESS
     queue_timeout = timeout or QUEUE_TIMEOUT
-    
-    if not _validate_address(queue_address):
-        logging.error(f"Dirección ZeroMQ inválida: {queue_address}")
-        return False
-    
-    bind_address = _push_bind_address(queue_address)
+        
+    bind_address = f"tcp://*:{QUEUE_PORT}"
 
     with _send_bind_lock:
         context = None
@@ -166,7 +151,7 @@ def consume(address: Optional[str] = None, timeout: Optional[int] = None,
         ...     print(f"Procesando: {task['task_type']}")
         ...     return {"status": "ok"}
     """
-    queue_address = address or QUEUE_ADDRESS
+    queue_address = address or f"tcp://localhost:{QUEUE_PORT}"
     queue_timeout = timeout or QUEUE_TIMEOUT
     queue_retry = retry_attempts or QUEUE_RETRY_ATTEMPTS
     queue_workers = workers or QUEUE_WORKERS
