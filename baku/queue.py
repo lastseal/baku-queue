@@ -57,11 +57,11 @@ def send(task: Dict[str, Any], timeout: Optional[int] = None) -> bool:
     try:
         context = zmq.Context()
         socket = context.socket(zmq.PUSH)
-        socket.setsockopt(zmq.LINGER, 0)
-        socket.setsockopt(zmq.SNDTIMEO, queue_timeout * 1000)
+        # socket.setsockopt(zmq.LINGER, 0)
+        # socket.setsockopt(zmq.SNDTIMEO, queue_timeout * 1000)
         socket.bind(bind_address)
         socket.send_json(task)
-        logging.debug("Tarea enviada (bind %s)", bind_address)
+        logging.debug("Task sent to queue: %s", bind_address)
         return True
 
     except zmq.ZMQError as e:
@@ -149,10 +149,10 @@ def consume(timeout: Optional[int] = None,
                 # Crear contexto y socket PULL
                 context = zmq.Context()
                 socket = context.socket(zmq.PULL)
-                socket.setsockopt(zmq.LINGER, 0)
-                socket.setsockopt(zmq.RCVTIMEO, queue_timeout * 1000)  # Timeout en ms
-                # Configurar prefetch para balanceo de carga
-                socket.setsockopt(zmq.RCVHWM, queue_prefetch)
+                # socket.setsockopt(zmq.LINGER, 0)
+                # socket.setsockopt(zmq.RCVTIMEO, queue_timeout * 1000)  # Timeout en ms
+                # # Configurar prefetch para balanceo de carga
+                # socket.setsockopt(zmq.RCVHWM, queue_prefetch)
                 
                 socket.connect(queue_address)
 
