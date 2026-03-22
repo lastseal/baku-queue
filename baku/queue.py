@@ -16,6 +16,13 @@ QUEUE_RETRY_ATTEMPTS = config.get('QUEUE_RETRY_ATTEMPTS', default=3, converter=i
 QUEUE_WORKERS = config.get('QUEUE_WORKERS', default=1, converter=int)
 QUEUE_PREFETCH = config.get('QUEUE_PREFETCH', default=10, converter=int)
 
+logging.info("QUEUE_PORT: %s, QUEUE_TIMEOUT: %s, QUEUE_RETRY_ATTEMPTS: %s, QUEUE_WORKERS: %s, QUEUE_PREFETCH: %s", 
+    QUEUE_PORT, 
+    QUEUE_TIMEOUT, 
+    QUEUE_RETRY_ATTEMPTS, 
+    QUEUE_WORKERS, 
+    QUEUE_PREFETCH)
+
 # Solo un PUSH puede enlazar el puerto a la vez (send corto: bind → send → cerrar)
 _send_bind_lock = threading.Lock()
 
@@ -125,6 +132,8 @@ def consume(timeout: Optional[int] = None,
     queue_retry = retry_attempts or QUEUE_RETRY_ATTEMPTS
     queue_workers = workers or QUEUE_WORKERS
     queue_prefetch = prefetch or QUEUE_PREFETCH
+
+    logging.info("getting consume")
 
     logging.debug("queue_address: %s, queue_timeout: %s, queue_retry: %s, queue_workers: %s, queue_prefetch: %s", 
         queue_address, 
