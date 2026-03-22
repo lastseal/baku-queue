@@ -45,7 +45,7 @@ def send(task: Dict[str, Any], timeout: Optional[int] = None) -> bool:
         True
     """
     if not isinstance(task, dict):
-        raise ValueError("La tarea debe ser un diccionario")
+        raise ValueError("Task must be a dictionary")
     
     queue_timeout = timeout or QUEUE_TIMEOUT
         
@@ -61,16 +61,16 @@ def send(task: Dict[str, Any], timeout: Optional[int] = None) -> bool:
         socket.setsockopt(zmq.SNDTIMEO, queue_timeout * 1000)
         socket.bind(bind_address)
         socket.send_json(task)
-        logging.debug(f"Tarea enviada (bind {bind_address}): {task}")
+        logging.debug("Tarea enviada (bind %s)", bind_address)
         return True
 
     except zmq.ZMQError as e:
-        logging.error(f"Error de ZeroMQ al enviar tarea: {e}")
+        logging.error("ZeroMQ error sending task: %s", e)
         return False
     except ValueError:
         raise
     except Exception as e:
-        logging.error(f"Error inesperado al enviar tarea: {e}", exc_info=True)
+        logging.error("Unexpected error sending task: %s", e, exc_info=True)
         return False
     finally:
         if socket:
@@ -157,7 +157,7 @@ def consume(timeout: Optional[int] = None,
                 socket.connect(queue_address)
 
                 logging.info(
-                    "Worker %s conectado a %s (PUSH bind en el puerto de esta dirección)",
+                    "Worker %s connected to %s",
                     worker_id,
                     queue_address,
                 )
@@ -169,36 +169,36 @@ def consume(timeout: Optional[int] = None,
                         task = socket.recv_json()
                         
                         # Procesar tarea
-                        logging.debug(f"Worker {worker_id} procesando tarea: {task}")
+                        logging.debug("Worker %s processing task", worker_id)
                         
                         try:
                             result = func(task)
-                            logging.debug(f"Worker {worker_id} completó tarea exitosamente")
+                            logging.debug("Worker %s completed task successfully", worker_id)
                             if result:
-                                logging.debug(f"Resultado: {result}")
+                                logging.debug("Result: %s", result)
                         except Exception as e:
-                            logging.error(f"Error al procesar tarea en worker {worker_id}: {e}", exc_info=True)
+                            logging.error("Error processing task in worker %s: %s", worker_id, e, exc_info=True)
                             
                             # Reintentos (opcional, implementación básica)
                             if queue_retry > 0:
-                                logging.warning(f"Reintentando tarea (intentos restantes: {queue_retry-1})")
+                                logging.warning("Retrying task (remaining attempts: %s)", queue_retry-1)
                                 # Aquí se podría implementar una cola de reintentos
                         
                     except zmq.Again:
                         # Timeout - continuar el loop
                         continue
                     except zmq.ZMQError as e:
-                        logging.error(f"Error de ZeroMQ en worker {worker_id}: {e}")
+                        logging.error("ZeroMQ error in worker %s: %s", worker_id, e)
                         time.sleep(1)  # Esperar antes de reintentar
                     except KeyboardInterrupt:
-                        logging.info(f"Worker {worker_id} recibió señal de interrupción")
+                        logging.info("Worker %s received interrupt signal", worker_id)
                         break
                     except Exception as e:
-                        logging.error(f"Error inesperado en worker {worker_id}: {e}", exc_info=True)
+                        logging.error("Unexpected error in worker %s: %s", worker_id, e, exc_info=True)
                         time.sleep(1)  # Esperar antes de reintentar
                         
             except Exception as e:
-                logging.error(f"Error fatal en worker {worker_id}: {e}", exc_info=True)
+                logging.error("Fatal error in worker %s: %s", worker_id, e, exc_info=True)
             finally:
                 # Cerrar socket y contexto
                 if socket:
@@ -214,8 +214,8 @@ def consume(timeout: Optional[int] = None,
                 logging.info(f"Worker {worker_id} desconectado")
         
         """Wrapper que inicia los workers y bloquea el hilo principal."""
-        logging.info(f"Iniciando consumidor de cola en {queue_address}")
-        logging.info(f"Workers: {queue_workers}, Prefetch: {queue_prefetch}, Timeout: {queue_timeout}s")
+        logging.info("Starting queue consumer at %s", queue_address)
+        logging.debug(f"Workers: {queue_workers}, Prefetch: {queue_prefetch}, Timeout: {queue_timeout}s")
         
         # Crear e iniciar workers
         
@@ -225,9 +225,5 @@ def consume(timeout: Optional[int] = None,
             process.start()
             processes.append(process)
             logging.info(f"Worker {i+1} iniciado")
-
-        # for process in processes:
-        #     process.join()
-        #     logging.info(f"Worker {process.name} joined")
 
     return decorator
