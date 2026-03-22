@@ -2,11 +2,12 @@
 
 from typing import Any, Dict, Optional, Callable
 from baku import config
+from multiprocessing import Process
+
 import zmq
 import json
 import logging
 import re
-import threading
 import time
 import signal
 
@@ -17,8 +18,8 @@ QUEUE_RETRY_ATTEMPTS = config.get('QUEUE_RETRY_ATTEMPTS', default=3, converter=i
 QUEUE_WORKERS = config.get('QUEUE_WORKERS', default=1, converter=int)
 QUEUE_PREFETCH = config.get('QUEUE_PREFETCH', default=10, converter=int)
 
-# Solo un PUSH puede enlazar el puerto a la vez (send corto: bind → send → cerrar)
-_send_bind_lock = threading.Lock()
+##
+#
 
 def send(task: Dict[str, Any], timeout: Optional[int] = None) -> bool:
     """
@@ -50,45 +51,41 @@ def send(task: Dict[str, Any], timeout: Optional[int] = None) -> bool:
         
     bind_address = f"tcp://*:{QUEUE_PORT}"
 
-    with _send_bind_lock:
-        context = None
-        socket = None
+    context = None
+    socket = None
 
-        try:
-            context = zmq.Context()
-            socket = context.socket(zmq.PUSH)
-            socket.setsockopt(zmq.LINGER, 0)
-            socket.setsockopt(zmq.SNDTIMEO, queue_timeout * 1000)
-            socket.bind(bind_address)
+    try:
+        context = zmq.Context()
+        socket = context.socket(zmq.PUSH)
+        socket.setsockopt(zmq.LINGER, 0)
+        socket.setsockopt(zmq.SNDTIMEO, queue_timeout * 1000)
+        socket.bind(bind_address)
+        socket.send_json(task)
+        logging.debug(f"Tarea enviada (bind {bind_address}): {task}")
+        return True
 
-            socket.send_json(task)
+    except zmq.ZMQError as e:
+        logging.error(f"Error de ZeroMQ al enviar tarea: {e}")
+        return False
+    except ValueError:
+        raise
+    except Exception as e:
+        logging.error(f"Error inesperado al enviar tarea: {e}", exc_info=True)
+        return False
+    finally:
+        if socket:
+            try:
+                socket.close()
+            except Exception:
+                pass
+        if context:
+            try:
+                context.term()
+            except Exception:
+                pass
 
-            logging.debug(f"Tarea enviada (bind {bind_address}): {task}")
-
-            return True
-
-        except zmq.ZMQError as e:
-            logging.error(f"Error de ZeroMQ al enviar tarea: {e}")
-            return False
-        except ValueError:
-            raise
-        except Exception as e:
-            logging.error(f"Error inesperado al enviar tarea: {e}", exc_info=True)
-            return False
-        finally:
-            if socket:
-                try:
-                    socket.close()
-                except Exception:
-                    pass
-            if context:
-                try:
-                    context.term()
-                except Exception:
-                    pass
-
-
-threads = []
+##
+#
 
 def consume(timeout: Optional[int] = None, 
             retry_attempts: Optional[int] = None, 
@@ -123,7 +120,7 @@ def consume(timeout: Optional[int] = None,
         ...     print(f"Procesando: {task['task_type']}")
         ...     return {"status": "ok"}
     """
-    queue_address = f"tcp://localhost:{QUEUE_PORT}"
+    queue_address = f"tcp://127.0.0.1:{QUEUE_PORT}"
     queue_timeout = timeout or QUEUE_TIMEOUT
     queue_retry = retry_attempts or QUEUE_RETRY_ATTEMPTS
     queue_workers = workers or QUEUE_WORKERS
@@ -141,7 +138,7 @@ def consume(timeout: Optional[int] = None,
 
         logging.debug("decorator: %s", func)
         
-        def worker_thread(worker_id: int):
+        def worker_process(worker_id: int):
             """Hilo worker que consume tareas."""
             context = None
             socket = None
@@ -154,7 +151,6 @@ def consume(timeout: Optional[int] = None,
                 socket = context.socket(zmq.PULL)
                 socket.setsockopt(zmq.LINGER, 0)
                 socket.setsockopt(zmq.RCVTIMEO, queue_timeout * 1000)  # Timeout en ms
-                
                 # Configurar prefetch para balanceo de carga
                 socket.setsockopt(zmq.RCVHWM, queue_prefetch)
                 
@@ -223,20 +219,15 @@ def consume(timeout: Optional[int] = None,
         
         # Crear e iniciar workers
         
+        processes = []
         for i in range(queue_workers):
-            thread = threading.Thread(target=worker_thread, args=(i+1,), daemon=True)
-            thread.start()
-            threads.append(thread)
+            process = Process(target=worker_process, args=(i+1,), daemon=True)
+            process.start()
+            processes.append(process)
             logging.info(f"Worker {i+1} iniciado")
-            
+
+        # for process in processes:
+        #     process.join()
+        #     logging.info(f"Worker {process.name} joined")
+
     return decorator
-
-def handle_sigint_sigterm(signum, frame):
-    logging.info("SIGINT received, closing workers")
-    for thread in threads:
-        thread.stop()
-        thread.join()
-    logging.info("all workers joined")
-
-signal.signal(signal.SIGINT,  handle_sigint_sigterm)
-signal.signal(signal.SIGTERM, handle_sigint_sigterm)
