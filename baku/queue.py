@@ -225,15 +225,6 @@ def consume(timeout: Optional[int] = None,
             thread.start()
             threads.append(thread)
             logging.info(f"Worker {i+1} iniciado")
-        
-        # Esperar a que todos los workers terminen (bloquea el hilo principal)
-        try:
-            for thread in threads:
-                thread.join()
-        except KeyboardInterrupt:
-            logging.info("Recibida señal de interrupción, cerrando workers...")
-            # Los threads son daemon, se cerrarán automáticamente
-        
-    
+            
     return decorator
 
