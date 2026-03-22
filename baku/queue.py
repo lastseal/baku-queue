@@ -19,28 +19,6 @@ QUEUE_PREFETCH = config.get('QUEUE_PREFETCH', default=10, converter=int)
 # Solo un PUSH puede enlazar el puerto a la vez (send corto: bind → send → cerrar)
 _send_bind_lock = threading.Lock()
 
-
-def _validate_address(address: str) -> bool:
-    """Valida que la dirección ZeroMQ sea válida.
-    
-    Args:
-        address: String con dirección ZeroMQ (ej: "tcp://localhost:5555")
-        
-    Returns:
-        bool: True si es válido, False en caso contrario
-    """
-    if not address:
-        return False
-    
-    try:
-        # Validar formato básico de dirección ZeroMQ
-        if not address.startswith(('tcp://', 'ipc://', 'inproc://')):
-            return False
-        return True
-    except Exception:
-        return False
-
-
 def send(task: Dict[str, Any], timeout: Optional[int] = None) -> bool:
     """
     Envía una tarea a la cola ZeroMQ.
@@ -82,19 +60,9 @@ def send(task: Dict[str, Any], timeout: Optional[int] = None) -> bool:
             socket.setsockopt(zmq.SNDTIMEO, queue_timeout * 1000)
             socket.bind(bind_address)
 
-            try:
-                task_json = json.dumps(task, ensure_ascii=False)
-            except (TypeError, ValueError) as e:
-                logging.error(f"Error al serializar tarea a JSON: {e}")
-                raise ValueError(f"La tarea no es serializable a JSON: {e}")
+            socket.send_json(task)
 
-            socket.send_string(task_json)
-            logging.debug(
-                "Tarea enviada (bind %s, PULL connect %s): %s",
-                bind_address,
-                queue_address,
-                task.get("task_type", "unknown"),
-            )
+            logging.debug(f"Tarea enviada (bind {bind_address}): {task}")
 
             return True
 
@@ -119,8 +87,9 @@ def send(task: Dict[str, Any], timeout: Optional[int] = None) -> bool:
                     pass
 
 
-def consume(address: Optional[str] = None, timeout: Optional[int] = None, 
-            retry_attempts: Optional[int] = None, workers: Optional[int] = None,
+def consume(timeout: Optional[int] = None, 
+            retry_attempts: Optional[int] = None, 
+            workers: Optional[int] = None,
             prefetch: Optional[int] = None):
     """
     Decorador que consume tareas de la cola ZeroMQ de forma continua.
@@ -151,25 +120,30 @@ def consume(address: Optional[str] = None, timeout: Optional[int] = None,
         ...     print(f"Procesando: {task['task_type']}")
         ...     return {"status": "ok"}
     """
-    queue_address = address or f"tcp://localhost:{QUEUE_PORT}"
+    queue_address = f"tcp://localhost:{QUEUE_PORT}"
     queue_timeout = timeout or QUEUE_TIMEOUT
     queue_retry = retry_attempts or QUEUE_RETRY_ATTEMPTS
     queue_workers = workers or QUEUE_WORKERS
     queue_prefetch = prefetch or QUEUE_PREFETCH
-    
-    if not _validate_address(queue_address):
-        logging.error(f"Dirección ZeroMQ inválida: {queue_address}")
-        def invalid_decorator(func):
-            return func
-        return invalid_decorator
-    
+
+    logging.debug("queue_address: %s, queue_timeout: %s, queue_retry: %s, queue_workers: %s, queue_prefetch: %s", 
+        queue_address, 
+        queue_timeout, 
+        queue_retry, 
+        queue_workers, 
+        queue_prefetch)
+        
     def decorator(func: Callable) -> Callable:
         """Decorador interno que consume tareas."""
+
+        logging.debug("decorator: %s", func)
         
         def worker_thread(worker_id: int):
             """Hilo worker que consume tareas."""
             context = None
             socket = None
+
+            logging.debug("connecting to %s", queue_address)
             
             try:
                 # Crear contexto y socket PULL
@@ -182,6 +156,7 @@ def consume(address: Optional[str] = None, timeout: Optional[int] = None,
                 socket.setsockopt(zmq.RCVHWM, queue_prefetch)
                 
                 socket.connect(queue_address)
+
                 logging.info(
                     "Worker %s conectado a %s (PUSH bind en el puerto de esta dirección)",
                     worker_id,
@@ -192,17 +167,10 @@ def consume(address: Optional[str] = None, timeout: Optional[int] = None,
                 while True:
                     try:
                         # Recibir tarea (el timeout está configurado en RCVTIMEO)
-                        task_json = socket.recv_string()
-                        
-                        # Deserializar tarea
-                        try:
-                            task = json.loads(task_json)
-                        except json.JSONDecodeError as e:
-                            logging.error(f"Error al deserializar tarea: {e}")
-                            continue
+                        task = socket.recv_json()
                         
                         # Procesar tarea
-                        logging.debug(f"Worker {worker_id} procesando tarea: {task.get('task_type', 'unknown')}")
+                        logging.debug(f"Worker {worker_id} procesando tarea: {task}")
                         
                         try:
                             result = func(task)
