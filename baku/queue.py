@@ -4,6 +4,7 @@ from baku import config
 import zmq
 import json
 import logging
+import re
 import threading
 import time
 from typing import Any, Dict, Optional, Callable
@@ -14,6 +15,9 @@ QUEUE_TIMEOUT = config.get('QUEUE_TIMEOUT', default=30, converter=int)
 QUEUE_RETRY_ATTEMPTS = config.get('QUEUE_RETRY_ATTEMPTS', default=3, converter=int)
 QUEUE_WORKERS = config.get('QUEUE_WORKERS', default=1, converter=int)
 QUEUE_PREFETCH = config.get('QUEUE_PREFETCH', default=10, converter=int)
+
+# Solo un PUSH puede enlazar el puerto a la vez (send corto: bind → send → cerrar)
+_send_bind_lock = threading.Lock()
 
 
 def _validate_address(address: str) -> bool:
@@ -37,16 +41,26 @@ def _validate_address(address: str) -> bool:
         return False
 
 
+def _push_bind_address(connect_address: str) -> str:
+    """Bind del PUSH a partir del mismo QUEUE_ADDRESS (tcp host:puerto → tcp *:puerto)."""
+    if connect_address.startswith("tcp://"):
+        m = re.match(r"tcp://([^/:]+):(\d+)", connect_address)
+        if m:
+            return f"tcp://*:{m.group(2)}"
+    return connect_address
+
+
 def send(task: Dict[str, Any], address: Optional[str] = None, timeout: Optional[int] = None) -> bool:
     """
     Envía una tarea a la cola ZeroMQ.
     
-    Esta función crea una conexión PUSH, envía la tarea serializada como JSON,
-    y cierra la conexión. Es thread-safe y puede ser llamada desde múltiples hilos.
+    Crea un socket PUSH, hace bind en el endpoint de envío, envía la tarea (JSON)
+    y cierra. Los consumidores deben usar connect a la misma QUEUE_ADDRESS (host:puerto).
+    Varios hilos: serializado con un lock porque solo un bind puede ocupar el puerto.
     
     Args:
         task: Diccionario con la tarea a enviar. Debe ser serializable a JSON.
-        address: Dirección ZeroMQ del broker (default: QUEUE_ADDRESS de variables de entorno)
+        address: Dirección que usan los PULL con connect (default: QUEUE_ADDRESS).
         timeout: Timeout en segundos para la operación (default: QUEUE_TIMEOUT)
         
     Returns:
@@ -70,50 +84,54 @@ def send(task: Dict[str, Any], address: Optional[str] = None, timeout: Optional[
         logging.error(f"Dirección ZeroMQ inválida: {queue_address}")
         return False
     
-    context = None
-    socket = None
-    
-    try:
-        # Crear contexto y socket PUSH
-        context = zmq.Context()
-        socket = context.socket(zmq.PUSH)
-        socket.setsockopt(zmq.LINGER, 0)  # No esperar al cerrar
-        socket.setsockopt(zmq.SNDTIMEO, queue_timeout * 1000)  # Timeout en ms
-        
-        # Conectar al broker
-        socket.connect(queue_address)
-        
-        # Serializar tarea a JSON
+    bind_address = _push_bind_address(queue_address)
+
+    with _send_bind_lock:
+        context = None
+        socket = None
+
         try:
-            task_json = json.dumps(task, ensure_ascii=False)
-        except (TypeError, ValueError) as e:
-            logging.error(f"Error al serializar tarea a JSON: {e}")
-            raise ValueError(f"La tarea no es serializable a JSON: {e}")
-        
-        # Enviar tarea
-        socket.send_string(task_json)
-        logging.debug(f"Tarea enviada a {queue_address}: {task.get('task_type', 'unknown')}")
-        
-        return True
-        
-    except zmq.ZMQError as e:
-        logging.error(f"Error de ZeroMQ al enviar tarea: {e}")
-        return False
-    except Exception as e:
-        logging.error(f"Error inesperado al enviar tarea: {e}", exc_info=True)
-        return False
-    finally:
-        # Cerrar socket y contexto
-        if socket:
+            context = zmq.Context()
+            socket = context.socket(zmq.PUSH)
+            socket.setsockopt(zmq.LINGER, 0)
+            socket.setsockopt(zmq.SNDTIMEO, queue_timeout * 1000)
+            socket.bind(bind_address)
+
             try:
-                socket.close()
-            except Exception:
-                pass
-        if context:
-            try:
-                context.term()
-            except Exception:
-                pass
+                task_json = json.dumps(task, ensure_ascii=False)
+            except (TypeError, ValueError) as e:
+                logging.error(f"Error al serializar tarea a JSON: {e}")
+                raise ValueError(f"La tarea no es serializable a JSON: {e}")
+
+            socket.send_string(task_json)
+            logging.debug(
+                "Tarea enviada (bind %s, PULL connect %s): %s",
+                bind_address,
+                queue_address,
+                task.get("task_type", "unknown"),
+            )
+
+            return True
+
+        except zmq.ZMQError as e:
+            logging.error(f"Error de ZeroMQ al enviar tarea: {e}")
+            return False
+        except ValueError:
+            raise
+        except Exception as e:
+            logging.error(f"Error inesperado al enviar tarea: {e}", exc_info=True)
+            return False
+        finally:
+            if socket:
+                try:
+                    socket.close()
+                except Exception:
+                    pass
+            if context:
+                try:
+                    context.term()
+                except Exception:
+                    pass
 
 
 def consume(address: Optional[str] = None, timeout: Optional[int] = None, 
@@ -131,7 +149,8 @@ def consume(address: Optional[str] = None, timeout: Optional[int] = None,
     un error pero el consumo continúa.
     
     Args:
-        address: Dirección ZeroMQ del broker (default: QUEUE_ADDRESS)
+        address: Dirección a la que este PULL hace connect; el productor PUSH hace bind
+            en el mismo puerto (default: QUEUE_ADDRESS)
         timeout: Timeout en segundos para recibir tareas (default: QUEUE_TIMEOUT)
         retry_attempts: Número de intentos de reintento (default: QUEUE_RETRY_ATTEMPTS)
         workers: Número de workers concurrentes (default: QUEUE_WORKERS)
@@ -177,9 +196,12 @@ def consume(address: Optional[str] = None, timeout: Optional[int] = None,
                 # Configurar prefetch para balanceo de carga
                 socket.setsockopt(zmq.RCVHWM, queue_prefetch)
                 
-                # Conectar al broker
                 socket.connect(queue_address)
-                logging.info(f"Worker {worker_id} conectado a {queue_address}")
+                logging.info(
+                    "Worker %s conectado a %s (PUSH bind en el puerto de esta dirección)",
+                    worker_id,
+                    queue_address,
+                )
                 
                 # Loop de consumo
                 while True:
