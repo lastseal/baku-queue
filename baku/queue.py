@@ -16,13 +16,6 @@ QUEUE_RETRY_ATTEMPTS = config.get('QUEUE_RETRY_ATTEMPTS', default=3, converter=i
 QUEUE_WORKERS = config.get('QUEUE_WORKERS', default=1, converter=int)
 QUEUE_PREFETCH = config.get('QUEUE_PREFETCH', default=10, converter=int)
 
-logging.info("QUEUE_PORT: %s, QUEUE_TIMEOUT: %s, QUEUE_RETRY_ATTEMPTS: %s, QUEUE_WORKERS: %s, QUEUE_PREFETCH: %s", 
-    QUEUE_PORT, 
-    QUEUE_TIMEOUT, 
-    QUEUE_RETRY_ATTEMPTS, 
-    QUEUE_WORKERS, 
-    QUEUE_PREFETCH)
-
 # Solo un PUSH puede enlazar el puerto a la vez (send corto: bind → send → cerrar)
 _send_bind_lock = threading.Lock()
 
@@ -133,8 +126,6 @@ def consume(timeout: Optional[int] = None,
     queue_workers = workers or QUEUE_WORKERS
     queue_prefetch = prefetch or QUEUE_PREFETCH
 
-    logging.info("getting consume")
-
     logging.debug("queue_address: %s, queue_timeout: %s, queue_retry: %s, queue_workers: %s, queue_prefetch: %s", 
         queue_address, 
         queue_timeout, 
@@ -223,32 +214,26 @@ def consume(timeout: Optional[int] = None,
                         pass
                 logging.info(f"Worker {worker_id} desconectado")
         
-        def wrapper(*args, **kwargs):
-            """Wrapper que inicia los workers y bloquea el hilo principal."""
-            logging.info(f"Iniciando consumidor de cola en {queue_address}")
-            logging.info(f"Workers: {queue_workers}, Prefetch: {queue_prefetch}, Timeout: {queue_timeout}s")
-            
-            # Crear e iniciar workers
-            threads = []
-            for i in range(queue_workers):
-                thread = threading.Thread(target=worker_thread, args=(i+1,), daemon=True)
-                thread.start()
-                threads.append(thread)
-                logging.info(f"Worker {i+1} iniciado")
-            
-            # Esperar a que todos los workers terminen (bloquea el hilo principal)
-            try:
-                for thread in threads:
-                    thread.join()
-            except KeyboardInterrupt:
-                logging.info("Recibida señal de interrupción, cerrando workers...")
-                # Los threads son daemon, se cerrarán automáticamente
+        """Wrapper que inicia los workers y bloquea el hilo principal."""
+        logging.info(f"Iniciando consumidor de cola en {queue_address}")
+        logging.info(f"Workers: {queue_workers}, Prefetch: {queue_prefetch}, Timeout: {queue_timeout}s")
         
-        # Mantener metadata de la función original
-        wrapper.__name__ = func.__name__
-        wrapper.__doc__ = func.__doc__
+        # Crear e iniciar workers
+        threads = []
+        for i in range(queue_workers):
+            thread = threading.Thread(target=worker_thread, args=(i+1,), daemon=True)
+            thread.start()
+            threads.append(thread)
+            logging.info(f"Worker {i+1} iniciado")
         
-        return wrapper
+        # Esperar a que todos los workers terminen (bloquea el hilo principal)
+        try:
+            for thread in threads:
+                thread.join()
+        except KeyboardInterrupt:
+            logging.info("Recibida señal de interrupción, cerrando workers...")
+            # Los threads son daemon, se cerrarán automáticamente
+        
     
     return decorator
 
