@@ -87,6 +87,8 @@ def send(task: Dict[str, Any], timeout: Optional[int] = None) -> bool:
                     pass
 
 
+threads = []
+
 def consume(timeout: Optional[int] = None, 
             retry_attempts: Optional[int] = None, 
             workers: Optional[int] = None,
@@ -219,7 +221,7 @@ def consume(timeout: Optional[int] = None,
         logging.info(f"Workers: {queue_workers}, Prefetch: {queue_prefetch}, Timeout: {queue_timeout}s")
         
         # Crear e iniciar workers
-        threads = []
+        
         for i in range(queue_workers):
             thread = threading.Thread(target=worker_thread, args=(i+1,), daemon=True)
             thread.start()
@@ -228,3 +230,12 @@ def consume(timeout: Optional[int] = None,
             
     return decorator
 
+def handle_sigint_sigterm(signum, frame):
+    logging.info("SIGINT received, closing workers")
+    for thread in threads:
+        thread.stop()
+        thread.join()
+    logging.info("all workers joined")
+
+signal.signal(signal.SIGINT,  handle_sigint_sigterm)
+signal.signal(signal.SIGTERM, handle_sigint_sigterm)
