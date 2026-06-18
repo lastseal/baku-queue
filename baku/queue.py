@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, Optional, Callable
 from baku import config
-from multiprocessing import Process
+import threading
 
 import zmq
 import json
@@ -221,9 +221,14 @@ def consume(timeout: Optional[int] = None,
         
         processes = []
         for i in range(queue_workers):
-            process = Process(target=worker_process, args=(i+1,), daemon=True)
+            process = threading.Thread(target=worker_process, args=(i+1,), daemon=True)
             process.start()
             processes.append(process)
             logging.info(f"Worker {i+1} iniciado")
+
+        for process in processes:
+            process.join()
+
+        return func
 
     return decorator
