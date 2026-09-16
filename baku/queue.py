@@ -13,6 +13,7 @@ import signal
 
 # Leer configuración desde variables de entorno
 QUEUE_PORT = config.get('QUEUE_PORT', default=5555)
+QUEUE_HOST = config.get('QUEUE_HOST', default='127.0.0.1')
 QUEUE_TIMEOUT = config.get('QUEUE_TIMEOUT', default=30, converter=int)
 QUEUE_RETRY_ATTEMPTS = config.get('QUEUE_RETRY_ATTEMPTS', default=3, converter=int)
 QUEUE_WORKERS = config.get('QUEUE_WORKERS', default=1, converter=int)
@@ -49,7 +50,7 @@ def send(task: Dict[str, Any], timeout: Optional[int] = None) -> bool:
     
     queue_timeout = timeout or QUEUE_TIMEOUT
         
-    bind_address = f"tcp://*:{QUEUE_PORT}"
+    bind_address = f"tcp://0.0.0.0:{QUEUE_PORT}"
 
     context = None
     socket = None
@@ -120,7 +121,7 @@ def consume(timeout: Optional[int] = None,
         ...     print(f"Procesando: {task['task_type']}")
         ...     return {"status": "ok"}
     """
-    queue_address = f"tcp://127.0.0.1:{QUEUE_PORT}"
+    queue_address = f"tcp://{QUEUE_HOST}:{QUEUE_PORT}"
     queue_timeout = timeout or QUEUE_TIMEOUT
     queue_retry = retry_attempts or QUEUE_RETRY_ATTEMPTS
     queue_workers = workers or QUEUE_WORKERS

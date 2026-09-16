@@ -84,11 +84,12 @@ def process_task(task):
 
 ## Variables de Entorno
 
-### Configuración
-
 ```bash
-# Dirección ZeroMQ del broker (requerido)
-QUEUE_ADDRESS=tcp://localhost:5555
+# Puerto ZeroMQ (opcional, default: 5555)
+QUEUE_PORT=5555
+
+# Host al que el consumidor hace connect (opcional, default: 127.0.0.1)
+QUEUE_HOST=127.0.0.1
 
 # Timeout en segundos para operaciones (opcional, default: 30)
 QUEUE_TIMEOUT=30
@@ -103,13 +104,96 @@ QUEUE_WORKERS=1
 QUEUE_PREFETCH=10
 ```
 
-### Formatos de Dirección ZeroMQ
+### Cómo se conectan productor y consumidor
 
-El módulo soporta diferentes tipos de direcciones ZeroMQ:
+- **`queue.send()`** (productor): socket PUSH con **bind** en `tcp://0.0.0.0:{QUEUE_PORT}` al enviar cada tarea.
+- **`@queue.consume()`** (consumidor): socket PULL con **connect** persistente a `tcp://{QUEUE_HOST}:{QUEUE_PORT}`.
 
-- **TCP**: `tcp://localhost:5555` o `tcp://192.168.1.100:5555`
-- **IPC**: `ipc:///tmp/queue.sock` (solo Unix/Linux)
-- **In-Process**: `inproc://queue` (solo dentro del mismo proceso)
+En el mismo host o contenedor, dejar `QUEUE_HOST=127.0.0.1` (default). En Docker Compose con servicios separados, el worker debe usar el **nombre del servicio** del API como `QUEUE_HOST`.
+
+## Docker Compose (API + Worker)
+
+Patrón de referencia: `vigia-export-service` en `vidatec-sos-compose`.
+
+### Arquitectura
+
+Dos servicios con la misma imagen:
+
+| Servicio | Comando | Rol |
+|----------|---------|-----|
+| `{nombre}-api` | `python src/main.py` | HTTP (`baku-api`) + `queue.send()` |
+| `{nombre}-worker` | `python src/worker.py` | `@queue.consume()` + lógica pesada |
+
+El API responde rápido (`{ status: "queued" }`). El worker procesa en background.
+
+### `docker-compose.yml`
+
+```yaml
+  export-api:
+    build: ../mi-servicio
+    restart: unless-stopped
+    environment:
+      - QUEUE_PORT=5555
+      # QUEUE_HOST no hace falta en el API (send hace bind en 0.0.0.0)
+    depends_on:
+      - database
+
+  export-worker:
+    build: ../mi-servicio
+    restart: unless-stopped
+    command: python src/worker.py
+    environment:
+      - QUEUE_PORT=5555
+      - QUEUE_HOST=export-api   # nombre del servicio API en Compose
+      - QUEUE_WORKERS=1         # obligatorio si el worker usa baku-db
+    depends_on:
+      - export-api
+```
+
+Reglas:
+
+1. **`QUEUE_HOST` solo en el worker**, con el nombre DNS del servicio API (`export-api`, no `127.0.0.1`).
+2. **Mismo `QUEUE_PORT`** en ambos servicios.
+3. **`depends_on: export-api`** en el worker para que el consumidor arranque después del API.
+4. **No hace falta `network_mode`** ni publicar el puerto 5555 al host: la red interna de Compose alcanza `export-api:5555`.
+5. Si el worker usa **`baku-db`**, mantener **`QUEUE_WORKERS=1`** (el singleton de DB no es thread-safe).
+
+### Código mínimo
+
+**`src/main.py`** (productor):
+
+```python
+from baku import api, queue
+
+@api.post("/api/tareas/")
+async def crear_tarea(req):
+    task = req.json
+    if not queue.send(task):
+        raise Exception({"status": 500, "message": "No se pudo encolar"})
+    return {"status": "queued"}
+```
+
+**`src/worker.py`** (consumidor):
+
+```python
+from baku import config, queue
+
+config.register_signal_handlers()
+
+@queue.consume(workers=1)
+def process_task(task):
+    # lógica de procesamiento
+    pass
+```
+
+### Checklist para implementar en otro proyecto
+
+1. Crear `main.py` (API) y `worker.py` (consumidor) en el mismo repo.
+2. Dockerfile con `CMD ["python", "src/main.py"]`; el worker se sobreescribe en Compose con `command`.
+3. Dos servicios en `docker-compose.yml` como arriba.
+4. Gateway/nginx: proxy HTTP solo al servicio API (ej. `/api/export/` → `export-api:3000`).
+5. Validar en el API lo que el cliente controla; el worker asume tareas bien formadas.
+6. Publicar/instalar la versión de `baku-queue` que incluye `QUEUE_HOST` y bind `0.0.0.0` en `send()`.
 
 ## API de Referencia
 
